@@ -1,3 +1,4 @@
+pub mod tls;
 use colored::Colorize;
 use rustyline::error::ReadlineError;
 use std::io::{stdin, stdout, Read, Result, Write};
@@ -17,8 +18,10 @@ pub struct Opts {
     pub exec: Option<String>,
     pub block_signals: bool,
     pub mode: Mode,
+    pub protocol: crate::input::Protocol,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Mode {
     Normal,
     Interactive,
@@ -108,51 +111,59 @@ fn block_signals(should_block: bool) -> Result<()> {
 }
 // Listen on given host and port
 pub fn listen(opts: &Opts) -> rustyline::Result<()> {
-    let listener = TcpListener::bind(format!("{}:{}", opts.host, opts.port))?;
+    match opts.protocol {
+        crate::input::Protocol::Tcp => {
+            let listener = TcpListener::bind(format!("{}:{}", opts.host, opts.port))?;
 
-    #[cfg(not(unix))]
-    {
-        if let Mode::Interactive = opts.mode {
-            print_feature_not_supported();
-
-            exit(1);
-        }
-    }
-
-    log::info!("Listening on {}:{}", opts.host.green(), opts.port.cyan());
-
-    let (mut stream, _) = listener.accept()?;
-
-    match &opts.mode {
-        Mode::Interactive => {
-            // It exists it if isn't unix above
-            block_signals(opts.block_signals)?;
-
-            #[cfg(unix)]
+            #[cfg(not(unix))]
             {
-                termios_handler::setup_fd()?;
-                listen_tcp_normal(stream, opts)?;
+                if let Mode::Interactive = opts.mode {
+                    print_feature_not_supported();
+                    exit(1);
+                }
+            }
+
+            log::info!("Listening on {}:{}", opts.host.green(), opts.port.cyan());
+            let (mut stream, _) = listener.accept()?;
+
+            match &opts.mode {
+                Mode::Interactive => {
+                    block_signals(opts.block_signals)?;
+                    #[cfg(unix)]
+                    {
+                        termios_handler::setup_fd()?;
+                        listen_tcp_normal(stream, opts)?;
+                    }
+                }
+                Mode::LocalInteractive => {
+                    let t = pipe_thread(stream.try_clone()?, stdout());
+                    print_connection_received();
+                    readline_decorator(|command| {
+                        stream
+                            .write_all((command + "\n").as_bytes())
+                            .expect("Failed to send TCP.");
+                    })?;
+                    t.join().unwrap();
+                }
+                Mode::Normal => {
+                    block_signals(opts.block_signals)?;
+                    listen_tcp_normal(stream, opts)?;
+                }
             }
         }
-        Mode::LocalInteractive => {
-            let t = pipe_thread(stream.try_clone()?, stdout());
-
-            print_connection_received();
-
-            readline_decorator(|command| {
-                stream
-                    .write_all((command + "\n").as_bytes())
-                    .expect("Failed to send TCP.");
-            })?;
-
-            t.join().unwrap();
+        crate::input::Protocol::Tls => {
+            // TODO: Implement TLS listener
+            unimplemented!("TLS listener not yet implemented");
         }
-        Mode::Normal => {
-            block_signals(opts.block_signals)?;
-            listen_tcp_normal(stream, opts)?;
+        crate::input::Protocol::Udp => {
+            // TODO: Implement UDP listener
+            unimplemented!("UDP listener not yet implemented");
+        }
+        crate::input::Protocol::Dtls => {
+            // TODO: Implement DTLS listener
+            unimplemented!("DTLS listener not yet implemented");
         }
     }
-
     Ok(())
 }
 

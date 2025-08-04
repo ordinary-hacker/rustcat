@@ -61,14 +61,22 @@ fn main() {
             local_interactive,
             exec,
             host,
+            protocol,
         } => {
             let (host, port) = match host_from_opts(host) {
                 Ok(value) => value,
                 Err(err) => {
                     log::error!("{}", err);
-
                     return;
                 }
+            };
+
+            let proto = match protocol.as_str() {
+                "tcp" => crate::input::Protocol::Tcp,
+                "tls" => crate::input::Protocol::Tls,
+                "udp" => crate::input::Protocol::Udp,
+                "dtls" => crate::input::Protocol::Dtls,
+                _ => crate::input::Protocol::Tcp,
             };
 
             let opts = Opts {
@@ -83,29 +91,37 @@ fn main() {
                 } else {
                     Mode::Normal
                 },
+                protocol: proto,
             };
 
             if let Err(err) = listen(&opts) {
                 log::error!("{}", err);
             };
         }
-        Command::Connect { shell, host } => {
+        Command::Connect { shell, host, protocol } => {
             let (host, port) = match host_from_opts(host) {
                 Ok(value) => value,
                 Err(err) => {
                     log::error!("{}", err);
-
                     return;
                 }
             };
 
+            let proto = match protocol.as_str() {
+                "tcp" => crate::input::Protocol::Tcp,
+                "tls" => crate::input::Protocol::Tls,
+                "udp" => crate::input::Protocol::Udp,
+                "dtls" => crate::input::Protocol::Dtls,
+                _ => crate::input::Protocol::Tcp,
+            };
+
             #[cfg(unix)]
-            if let Err(err) = unixshell::shell(host, port, shell) {
+            if let Err(err) = unixshell::shell(host, port, shell, proto) {
                 log::error!("{}", err);
             }
 
             #[cfg(windows)]
-            if let Err(err) = winshell::shell(host, port, shell) {
+            if let Err(err) = winshell::shell(host, port, shell, proto) {
                 log::error!("{}", err);
             }
 
@@ -129,11 +145,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn revshell_bad_port() {
+        use crate::input::Protocol;
+
         assert_eq!(
             unixshell::shell(
                 "0.0.0.0".to_string(),
                 "420692223".to_string(),
-                "bash".to_string()
+                "bash".to_string(),
+                Protocol::Tcp
             )
             .map_err(|e| e.kind()),
             Err(ErrorKind::InvalidInput)

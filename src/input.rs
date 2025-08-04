@@ -9,6 +9,14 @@ pub struct Opts {
     // verbose: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Protocol {
+    Tcp,
+    Tls,
+    Udp,
+    Dtls,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a listener for incoming connections
@@ -38,6 +46,10 @@ pub enum Command {
         // Host:ip, IP if only 1 value provided
         #[clap(num_args = ..=2)]
         host: Vec<String>,
+
+        /// Protocol: tcp, tls, udp, dtls
+        #[clap(long, default_value = "tcp")]
+        protocol: String,
     },
 
     /// Connect to the controlling host
@@ -50,5 +62,9 @@ pub enum Command {
         // Host:ip, IP if only 1 value provided
         #[clap(num_args = ..=2)]
         host: Vec<String>,
+
+        /// Protocol: tcp, tls, udp, dtls
+        #[clap(long, default_value = "tcp")]
+        protocol: String,
     },
 }
