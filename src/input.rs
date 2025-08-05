@@ -50,6 +50,14 @@ pub enum Command {
         /// Protocol: tcp, tls, udp, dtls
         #[clap(long, default_value = "tcp")]
         protocol: String,
+
+        /// Path to certificate file (PEM)
+        #[clap(long)]
+        cert: Option<String>,
+
+        /// Path to private key file (PEM)
+        #[clap(long)]
+        key: Option<String>,
     },
 
     /// Connect to the controlling host
@@ -66,5 +74,13 @@ pub enum Command {
         /// Protocol: tcp, tls, udp, dtls
         #[clap(long, default_value = "tcp")]
         protocol: String,
+
+        /// Path to certificate file (PEM)
+        #[clap(long)]
+        cert: Option<String>,
+
+        /// Path to private key file (PEM)
+        #[clap(long)]
+        key: Option<String>,
     },
 }

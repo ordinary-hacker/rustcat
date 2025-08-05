@@ -19,6 +19,8 @@ pub struct Opts {
     pub block_signals: bool,
     pub mode: Mode,
     pub protocol: crate::input::Protocol,
+    pub cert: Option<String>,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,16 +154,92 @@ pub fn listen(opts: &Opts) -> rustyline::Result<()> {
             }
         }
         crate::input::Protocol::Tls => {
-            // TODO: Implement TLS listener
-            unimplemented!("TLS listener not yet implemented");
+            use std::fs;
+            use std::sync::Arc;
+            use rustls::ServerConfig;
+            use rustls::pki_types::CertificateDer;
+            use crate::listener::tls::accept_tls;
+            let cert_path = opts.cert.as_ref().expect("TLS listener requires --cert");
+            let key_path = opts.key.as_ref().expect("TLS listener requires --key");
+            let cert_data = fs::read(cert_path).expect("Failed to read cert file");
+            let key_data = fs::read(key_path).expect("Failed to read key file");
+            let certs = vec![CertificateDer::from(cert_data)];
+            use rustls::pki_types::PrivatePkcs8KeyDer;
+            let key = PrivatePkcs8KeyDer::from(key_data).into();
+            let config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .expect("bad cert/key");
+            let config = Arc::new(config);
+            let listener = TcpListener::bind(format!("{}:{}", opts.host, opts.port))?;
+            log::info!("Listening (TLS) on {}:{}", opts.host.green(), opts.port.cyan());
+            let (stream, _) = listener.accept()?;
+            let mut tls_stream = accept_tls(stream, config)?;
+            let (stdin_thread, stdout_thread) = (
+                pipe_thread(stdin(), tls_stream.get_mut().try_clone()?),
+                pipe_thread(tls_stream, stdout()),
+            );
+            print_connection_received();
+            stdin_thread.join().unwrap();
+            stdout_thread.join().unwrap();
         }
         crate::input::Protocol::Udp => {
-            // TODO: Implement UDP listener
-            unimplemented!("UDP listener not yet implemented");
+            log::error!("UDP listener not implemented");
+            exit(1);
         }
         crate::input::Protocol::Dtls => {
-            // TODO: Implement DTLS listener
-            unimplemented!("DTLS listener not yet implemented");
+            use std::fs;
+            use udp_dtls::Identity;
+            use crate::listener::tls::accept_dtls;
+            let cert_path = opts.cert.as_ref().expect("DTLS listener requires --cert (PKCS12)");
+            let pkcs12_data = fs::read(cert_path).expect("Failed to read PKCS12 file");
+            let identity = Identity::from_pkcs12(&pkcs12_data, "").expect("Invalid PKCS12");
+            let socket = std::net::UdpSocket::bind(format!("{}:{}", opts.host, opts.port))?;
+            log::info!("Listening (DTLS) on {}:{}", opts.host.green(), opts.port.cyan());
+            use std::sync::{Arc, Mutex};
+            let dtls_stream = accept_dtls(socket, identity)?;
+            let stream = Arc::new(Mutex::new(dtls_stream));
+            let stream_writer = Arc::clone(&stream);
+            let stdin_thread = std::thread::spawn(move || {
+                let mut stdin = stdin();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stdin.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if let Ok(mut s) = stream_writer.lock() {
+                        if s.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+            let stream_reader = Arc::clone(&stream);
+            let stdout_thread = std::thread::spawn(move || {
+                let mut stdout = stdout();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream_reader.lock() {
+                        Ok(mut s) => match s.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        },
+                        Err(_) => break,
+                    };
+                    if stdout.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = stdout.flush();
+                }
+            });
+            print_connection_received();
+            stdin_thread.join().unwrap();
+            stdout_thread.join().unwrap();
         }
     }
     Ok(())

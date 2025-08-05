@@ -62,7 +62,12 @@ fn main() {
             exec,
             host,
             protocol,
+            cert,
+            key,
         } => {
+            let cert_clone = cert.clone();
+            let key_clone = key.clone();
+
             let (host, port) = match host_from_opts(host) {
                 Ok(value) => value,
                 Err(err) => {
@@ -77,6 +82,16 @@ fn main() {
                 "udp" => crate::input::Protocol::Udp,
                 "dtls" => crate::input::Protocol::Dtls,
                 _ => crate::input::Protocol::Tcp,
+            };
+
+            // Load cert/key if provided
+            let (_cert_data, _key_data) = match (cert_clone.as_ref(), key_clone.as_ref()) {
+                (Some(cert_path), Some(key_path)) => {
+                    let cert_data = std::fs::read(cert_path).expect("Failed to read cert file");
+                    let key_data = std::fs::read(key_path).expect("Failed to read key file");
+                    (Some(cert_data), Some(key_data))
+                },
+                _ => (None, None)
             };
 
             let opts = Opts {
@@ -92,13 +107,15 @@ fn main() {
                     Mode::Normal
                 },
                 protocol: proto,
+                cert: cert_clone,
+                key: key_clone,
             };
 
             if let Err(err) = listen(&opts) {
                 log::error!("{}", err);
             };
         }
-        Command::Connect { shell, host, protocol } => {
+        Command::Connect { shell, host, protocol, cert, key } => {
             let (host, port) = match host_from_opts(host) {
                 Ok(value) => value,
                 Err(err) => {
@@ -115,13 +132,30 @@ fn main() {
                 _ => crate::input::Protocol::Tcp,
             };
 
+            // Load cert/key if provided
+            let (_cert_data, _key_data) = match (cert, key) {
+                (Some(cert_path), Some(key_path)) => {
+                    let cert_data = std::fs::read(cert_path).expect("Failed to read cert file");
+                    let key_data = std::fs::read(key_path).expect("Failed to read key file");
+                    (Some(cert_data), Some(key_data))
+                },
+                _ => (None, None)
+            };
+
             #[cfg(unix)]
-            if let Err(err) = unixshell::shell(host, port, shell, proto) {
+            if let Err(err) = unixshell::shell(
+                host,
+                port,
+                shell,
+                proto,
+                None,
+                None
+            ) {
                 log::error!("{}", err);
             }
 
             #[cfg(windows)]
-            if let Err(err) = winshell::shell(host, port, shell, proto) {
+            if let Err(err) = winshell::shell(host, port, shell, proto, cert_data.clone(), key_data.clone()) {
                 log::error!("{}", err);
             }
 
@@ -152,7 +186,9 @@ mod tests {
                 "0.0.0.0".to_string(),
                 "420692223".to_string(),
                 "bash".to_string(),
-                Protocol::Tcp
+                Protocol::Tcp,
+                None,
+                None
             )
             .map_err(|e| e.kind()),
             Err(ErrorKind::InvalidInput)

@@ -1,10 +1,10 @@
-use std::io::{copy, Result};
+use std::io::{copy, Result, Read, Write};
 use std::net::{TcpStream, UdpSocket, SocketAddr};
 use std::process::{Command, Stdio};
 use std::thread;
 use crate::input::Protocol;
 
-pub(crate) fn shell(host: String, port: String, shell: String, proto: Protocol) -> Result<()> {
+pub(crate) fn shell(host: String, port: String, shell: String, proto: Protocol, cert_data: Option<Vec<u8>>, key_data: Option<Vec<u8>>) -> Result<()> {
     match proto {
         Protocol::Tcp => {
             let mut sock_write = TcpStream::connect(format!("{}:{}", host, port))?;
@@ -43,27 +43,141 @@ pub(crate) fn shell(host: String, port: String, shell: String, proto: Protocol) 
             let config = Arc::new(config);
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
             let mut tls_stream = connect_tls(stream, config, &host)?;
-            // TODO: Implement proper stdio <-> tls_stream piping for Windows
-            eprintln!("TLS shell not fully implemented on Windows. You must implement a custom adapter for stdio <-> tls_stream");
+            // Pipe stdio <-> tls_stream
+            let mut stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            let mut tls_stream_clone = tls_stream.get_ref().try_clone().ok();
+            // Thread to read from stdin and write to tls_stream
+            let mut tls_stream_write = tls_stream;
+            let writer = thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stdin.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if tls_stream_write.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+            // Thread to read from tls_stream and write to stdout
+            if let Some(mut tls_stream_clone) = tls_stream_clone {
+                let reader = thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let n = match tls_stream_clone.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        if stdout.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = stdout.flush();
+                    }
+                });
+                let _ = reader.join();
+            }
+            let _ = writer.join();
         }
         Protocol::Udp => {
             let sock = UdpSocket::bind("0.0.0.0:0")?;
             let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
             sock.connect(addr)?;
-            // TODO: Implement proper stdio <-> udp piping for Windows
-            eprintln!("UDP shell not fully implemented on Windows. You must implement a custom adapter for stdio <-> udp socket");
+            // Pipe stdio <-> udp socket
+            let sock_clone = sock.try_clone().ok();
+            let mut stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            // Thread to read from stdin and write to UDP socket
+            let mut sock_write = sock;
+            let writer = thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stdin.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if sock_write.send(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+            // Thread to read from UDP socket and write to stdout
+            if let Some(sock_clone) = sock_clone {
+                let reader = thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let n = match sock_clone.recv(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        if stdout.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = stdout.flush();
+                    }
+                });
+                let _ = reader.join();
+            }
+            let _ = writer.join();
         }
         Protocol::Dtls => {
             use udp_dtls::{Identity, Certificate};
             use crate::listener::tls::connect_dtls;
+            use std::thread;
             let sock = UdpSocket::bind("0.0.0.0:0")?;
             let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
-            // For demo: use dummy identity/cert (replace with real certs in production)
-            let identity = Identity::from_pkcs12(&[], "").unwrap_or_else(|_| panic!("Provide DTLS identity"));
-            let peer_cert = Certificate::from_der(&[]).unwrap_or_else(|_| panic!("Provide DTLS peer cert"));
+            let identity = match (cert_data.as_ref(), key_data.as_ref()) {
+                (Some(cert), Some(key)) => Identity::from_pem(cert, key).expect("Invalid cert/key for DTLS"),
+                _ => panic!("DTLS requires --cert and --key")
+            };
+            let peer_cert = match cert_data.as_ref() {
+                Some(cert) => Certificate::from_pem(cert).expect("Invalid peer cert for DTLS"),
+                None => panic!("DTLS requires --cert for peer cert")
+            };
             let mut dtls_stream = connect_dtls(sock, addr, identity, peer_cert)?;
-            // TODO: Implement proper stdio <-> dtls_stream piping for Windows
-            eprintln!("DTLS shell not fully implemented on Windows. You must implement a custom adapter for stdio <-> dtls_stream");
+            // Pipe stdio <-> dtls_stream
+            let mut stdin = std::io::stdin();
+            let mut stdout = std::io::stdout();
+            let mut stream_clone = dtls_stream.try_clone().ok();
+            // Thread to read from stdin and write to dtls_stream
+            let mut dtls_stream_write = dtls_stream;
+            let writer = thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stdin.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if dtls_stream_write.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+            // Thread to read from dtls_stream and write to stdout
+            if let Some(mut stream_clone) = stream_clone {
+                let reader = thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let n = match stream_clone.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        if stdout.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = stdout.flush();
+                    }
+                });
+                let _ = reader.join();
+            }
+            let _ = writer.join();
         }
     }
     log::warn!("Shell exited");
